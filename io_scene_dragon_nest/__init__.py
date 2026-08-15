@@ -34,6 +34,16 @@ classes = (
     gui.MATERIAL_PT_DNMaterials,
 )
 
+# These property groups install properties on Blender data-block types.  Blender
+# does not call a class' ``register`` method automatically when
+# ``bpy.utils.register_class`` is used, so keep the callbacks explicit here.
+property_group_callbacks = (
+    gui.DN_ObjectProps,
+    gui.DN_MaterialProps,
+    gui.DN_BoneProps,
+    gui.DN_ActionProps,
+)
+
 _draw_3d_handler = None
 
 
@@ -45,6 +55,9 @@ def draw_3d_callback():
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
+
+    for cls in property_group_callbacks:
+        cls.register()
 
     bpy.types.TOPBAR_MT_file_import.append(gui.menu_func_import)
     bpy.types.TOPBAR_MT_file_export.append(gui.menu_func_export)
@@ -58,6 +71,17 @@ def unregister():
     bpy.types.TOPBAR_MT_file_export.remove(gui.menu_func_export)
 
     bpy.types.SpaceView3D.draw_handler_remove(_draw_3d_handler, 'WINDOW')
+
+    # Remove the properties installed by the property-group callbacks before
+    # unregistering the classes that define them.
+    for owner, name in (
+        (bpy.types.Object, "dragon_nest"),
+        (bpy.types.Material, "dragon_nest"),
+        (bpy.types.Bone, "dragon_nest"),
+        (bpy.types.Action, "dragon_nest"),
+    ):
+        if hasattr(owner, name):
+            delattr(owner, name)
 
     for cls in classes:
         bpy.utils.unregister_class(cls)

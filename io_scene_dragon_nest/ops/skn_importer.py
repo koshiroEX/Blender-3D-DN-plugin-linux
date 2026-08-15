@@ -10,6 +10,28 @@ from .msh_importer import MshImporter
 from ..types.skn import SKN, MatPropType
 
 
+def resolve_asset_path(directory, asset_name):
+    """Resolve game asset references on case-sensitive file systems.
+
+    Dragon Nest files were authored for Windows and frequently contain a
+    different filename case (or a Windows path separator) than the extracted
+    file on disk. Windows hides that problem; Linux does not.
+    """
+    name = asset_name.replace('\\', '/').rsplit('/', 1)[-1]
+    path = os.path.join(directory, name)
+    if os.path.isfile(path):
+        return path
+
+    folded_name = name.casefold()
+    try:
+        for entry in os.scandir(directory):
+            if entry.name.casefold() == folded_name:
+                return entry.path
+    except OSError:
+        pass
+    return path
+
+
 def add_transparent_node(node_tree):
     nodes = node_tree.nodes
 
@@ -20,7 +42,12 @@ def add_transparent_node(node_tree):
     mix_shader_node = nodes.new('ShaderNodeMixShader')
     transparent_node = nodes.new('ShaderNodeBsdfTransparent')
 
-    node_tree.links.new(texture_node.outputs[1], mix_shader_node.inputs[0])
+    # The Alpha output is index 1 in Blender's image texture node, but use the
+    # socket name when available so this remains stable across Blender builds.
+    alpha_socket = texture_node.outputs.get('Alpha')
+    if alpha_socket is None:
+        alpha_socket = texture_node.outputs[1]
+    node_tree.links.new(alpha_socket, mix_shader_node.inputs[0])
     node_tree.links.new(transparent_node.outputs[0], mix_shader_node.inputs[1])
     node_tree.links.new(bsdf_node.outputs[0], mix_shader_node.inputs[2])
 
@@ -45,7 +72,9 @@ class SknImporter:
                 for prop in skn_mat.properties:
                     if prop.type == MatPropType.TEXTURE and prop.value[-4:].lower() == ".dds":
                         texture = bpy.data.textures.get(prop.value) or bpy.data.textures.new(prop.value, type='IMAGE')
-                        texture.image = bpy.data.images.get(prop.value) or load_image(prop.value, options['directory'])
+                        texture_path = resolve_asset_path(options['directory'], prop.value)
+                        texture.image = bpy.data.images.get(prop.value) or load_image(
+                            os.path.basename(texture_path), os.path.dirname(texture_path))
 
                     if prop.name == "g_MaterialAmbient":
                         material.dragon_nest.enable_colors = True
@@ -70,7 +99,13 @@ class SknImporter:
                         node_texture.image = texture.image
                         node_texture.texcoords = 'UV'
 
-                        material.blend_method = 'HASHED'
+                        # Blender 4.2 renamed blend_method to
+                        # surface_render_method. Keep support for older
+                        # Blender versions used by the original add-on.
+                        if hasattr(material, 'surface_render_method'):
+                            material.surface_render_method = 'DITHERED'
+                        else:
+                            material.blend_method = 'HASHED'
                         add_transparent_node(material.node_tree)
 
                     elif prop.name == "g_EmissiveTex":
@@ -140,7 +175,7 @@ def load(context, filepath, *, global_scale=1.0, append_to_target=False):
     if not skn_importer.imported:
         return None
 
-    msh_path = os.path.join(directory, skn_importer.skn.name)
+    msh_path = resolve_asset_path(directory, skn_importer.skn.name)
 
     if not os.path.isfile(msh_path):
         context.window_manager.popup_menu(gui.missing_msh, title="Warning", icon='ERROR')

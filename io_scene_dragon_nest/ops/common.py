@@ -50,23 +50,3 @@ def get_armature_matrices(armature_object):
 
 def find_material_node(nodes, node_type):
     return next((node for node in nodes if node.type == node_type), None)
-
-
-def format_object_name(name, suffix="Object"):
-    if not name:
-        return "Unnamed " + suffix
-
-    if "." in name:
-        return name + ".001"
-
-    return name
-
-
-def extract_object_name(obj):
-    name = obj.name
-
-    if name.startswith("Unnamed "):
-        return ""
-
-    dot_pos = name.rfind(".")
-    return name if dot_pos < 0 else name[:dot_pos]

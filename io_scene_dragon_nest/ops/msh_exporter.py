@@ -3,13 +3,7 @@ import bpy
 
 from mathutils import Matrix
 
-from .common import (
-    unoriented_matrix,
-    translation_matrix,
-    scale_matrix,
-    get_active_armature_object,
-    extract_object_name,
-)
+from .common import unoriented_matrix, translation_matrix, scale_matrix, get_active_armature_object
 from ..gui import gui
 from ..types import common
 from ..types.msh import MSH, Bone, Collision, Dummy, Mesh, CollisionType
@@ -83,12 +77,12 @@ class MshExporter:
             translation = matrix.to_translation()
             transformation = common.Vector3D(*translation)
 
-        return Dummy(extract_object_name(obj), parent_name, transformation)
+        return Dummy(obj.name, parent_name, transformation)
 
     @staticmethod
     def export_collision(context, obj, apply_root_transform) -> Collision:
         collision = Collision()
-        collision.name = extract_object_name(obj)
+        collision.name = obj.name
         collision.type = int(obj.dragon_nest.collision.type)
 
         matrix_world = obj.matrix_world if apply_root_transform else obj.matrix_local
@@ -149,7 +143,7 @@ class MshExporter:
     @staticmethod
     def export_mesh(context, obj, arm_obj, apply_root_transform) -> Mesh:
         msh_mesh = Mesh()
-        msh_mesh.name = extract_object_name(obj)
+        msh_mesh.name = obj.name
         msh_mesh.parent_name = obj.dragon_nest.parent_name
         msh_mesh.use_tristrip = obj.dragon_nest.use_tristrip
 
