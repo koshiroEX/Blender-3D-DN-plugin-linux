@@ -11,20 +11,64 @@ from ..types.ani import ANI, ANIM, AnimationBone
 ANIM_ID_ALL = -1
 
 
-def set_keyframe(fcurves, frame, values):
-    for i, fc in enumerate(fcurves):
-        fc.keyframe_points.add(1)
-        fc.keyframe_points[-1].co = frame, values[i]
-        fc.keyframe_points[-1].interpolation = 'LINEAR'
+def set_bone_keyframes(arm_obj, bone_name, data_type, frame, values):
+    """Inserts keyframes directly into the bone pose and sets the interpolation to LINEAR."""
+    pose_bone = arm_obj.pose.bones.get(bone_name) or arm_obj.pose.bones.get(bone_name[:-2])
+    if not pose_bone:
+        return
+
+    setattr(pose_bone, data_type, values)
+    pose_bone.keyframe_insert(data_path=data_type, frame=frame)
+
+
+def set_linear_interpolation(action):
+    """Ensures that all F-Curves generated in the Action use LINEAR interpolation."""
+    fcurves = []
+
+    # Support for the new Slots/Bindings structure in Blender 5.x
+    if hasattr(action, "slots"):
+        for slot in action.slots:
+            if hasattr(slot, "fcurves"):
+                fcurves.extend(list(slot.fcurves))
+            elif hasattr(slot, "curves"):
+                fcurves.extend(list(slot.curves))
+    if hasattr(action, "bindings"):
+        for binding in action.bindings:
+            if hasattr(binding, "fcurves"):
+                fcurves.extend(list(binding.fcurves))
+    if hasattr(action, "fcurves"):
+        fcurves.extend(list(action.fcurves))
+    if hasattr(action, "curves"):
+        fcurves.extend(list(action.curves))
+
+    for fc in fcurves:
+        for kf in fc.keyframe_points:
+            kf.interpolation = 'LINEAR'
 
 
 def find_last_keyframe_time(action):
     last_frame = 0
-    for fc in action.fcurves:
+    fcurves = []
+
+    if hasattr(action, "slots"):
+        for slot in action.slots:
+            if hasattr(slot, "fcurves"):
+                fcurves.extend(list(slot.fcurves))
+            elif hasattr(slot, "curves"):
+                fcurves.extend(list(slot.curves))
+    if hasattr(action, "bindings"):
+        for binding in action.bindings:
+            if hasattr(binding, "fcurves"):
+                fcurves.extend(list(binding.fcurves))
+    if hasattr(action, "fcurves"):
+        fcurves.extend(list(action.fcurves))
+    if hasattr(action, "curves"):
+        fcurves.extend(list(action.curves))
+
+    for fc in fcurves:
         for kf in fc.keyframe_points:
-            frame = kf.co[0]
-            if frame > last_frame:
-                last_frame = frame
+            if kf.co[0] > last_frame:
+                last_frame = kf.co[0]
     return int(last_frame)
 
 
@@ -58,8 +102,13 @@ def create_actions(armature_object, animation_bones: List[AnimationBone], anim_i
     def_matrices = get_armature_matrices(armature_object)
     actions = {}
 
+    anim_data = armature_object.animation_data or armature_object.animation_data_create()
+
     for ani_bone in animation_bones:
         bone = armature_object.data.bones.get(ani_bone.name) or armature_object.data.bones.get(ani_bone.name[:-2])
+        if not bone:
+            continue
+
         def_mat = def_matrices[bone.name]
         parent_def_mat = def_matrices[bone.parent.name] if bone.parent else Matrix()
 
@@ -67,18 +116,13 @@ def create_actions(armature_object, animation_bones: List[AnimationBone], anim_i
             if anim_id not in (ANIM_ID_ALL, act_idx):
                 continue
 
-            act = actions.get(act_idx) or bpy.data.actions.new("dn_animation %d" % act_idx)
-            actions[act_idx] = act
+            act = actions.get(act_idx)
+            if not act:
+                act = bpy.data.actions.new("dn_animation %d" % act_idx)
+                actions[act_idx] = act
 
-            group = act.groups.new(name=bone.name)
-            path_prefix = f'pose.bones["{bone.name}"].'
-
-            fcurves_location = [act.fcurves.new(data_path=path_prefix + "location", index=i) for i in range(3)]
-            fcurves_rotation = [act.fcurves.new(data_path=path_prefix + "rotation_quaternion", index=i) for i in range(4)]
-            fcurves_scale    = [act.fcurves.new(data_path=path_prefix + "scale", index=i) for i in range(3)]
-
-            for fc in fcurves_location + fcurves_rotation + fcurves_scale:
-                 fc.group = group
+            # Assign the Action directly to the armature so the native API registers the keyframes in the correct Action.
+            anim_data.action = act
 
             loc = Vector(anim.base_location.unpack())
             rot = Quaternion((
@@ -92,25 +136,27 @@ def create_actions(armature_object, animation_bones: List[AnimationBone], anim_i
             mat = oriented_matrix(translation_matrix(loc) @ rotation_matrix(rot) @ scale_matrix(scl))
             mat_basis = local_to_basis_matrix(mat, def_mat, parent_def_mat)
 
-            set_keyframe(fcurves_location, 0, mat_basis.to_translation())
-            set_keyframe(fcurves_rotation, 0, mat_basis.to_quaternion())
-            set_keyframe(fcurves_scale, 0, mat_basis.to_scale())
+            set_bone_keyframes(armature_object, bone.name, "location", 0, mat_basis.to_translation())
+            set_bone_keyframes(armature_object, bone.name, "rotation_quaternion", 0, mat_basis.to_quaternion())
+            set_bone_keyframes(armature_object, bone.name, "scale", 0, mat_basis.to_scale())
 
             for kf in anim.locations:
                 mat = translation_matrix((kf.value.x, kf.value.z, kf.value.y))
                 mat_basis = local_to_basis_matrix(mat, def_mat, parent_def_mat)
-                set_keyframe(fcurves_location, kf.frame, mat_basis.to_translation())
+                set_bone_keyframes(armature_object, bone.name, "location", kf.frame, mat_basis.to_translation())
 
             for kf in anim.rotations:
                 rot = Quaternion((kf.value.w, kf.value.x, kf.value.y, kf.value.z))
                 mat = oriented_matrix(rotation_matrix(rot))
                 mat_basis = local_to_basis_matrix(mat, def_mat, parent_def_mat)
-                set_keyframe(fcurves_rotation, kf.frame, mat_basis.to_quaternion())
+                set_bone_keyframes(armature_object, bone.name, "rotation_quaternion", kf.frame, mat_basis.to_quaternion())
 
             for kf in anim.scales:
                 mat = scale_matrix((kf.value.x, kf.value.z, kf.value.y))
                 mat_basis = local_to_basis_matrix(mat, def_mat, parent_def_mat)
-                set_keyframe(fcurves_scale, kf.frame, mat_basis.to_scale())
+                set_bone_keyframes(armature_object, bone.name, "scale", kf.frame, mat_basis.to_scale())
+
+            set_linear_interpolation(act)
 
     return actions
 
