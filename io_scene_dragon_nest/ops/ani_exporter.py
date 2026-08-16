@@ -65,11 +65,40 @@ class ActData:
 class AniExporter:
 
     @staticmethod
+    def get_fcurves(act):
+        """Retorna a lista de fcurves lidando com a API antiga e com o novo sistema de Slotted Actions (Blender 4.4+/5.x)."""
+        if hasattr(act, "fcurves"):
+            return act.fcurves
+        elif hasattr(act, "curves"):
+            return act.curves
+
+        fcurves = []
+        # support for slots system
+        if hasattr(act, "slots"):
+            for slot in act.slots:
+                if hasattr(slot, "fcurves"):
+                    fcurves.extend(slot.fcurves)
+                elif hasattr(slot, "curves"):
+                    fcurves.extend(slot.curves)
+        # support for bindings/channels if fcurves area layered
+        elif hasattr(act, "layers"):
+            for layer in act.layers:
+                for strip in getattr(layer, "strips", []):
+                    if hasattr(strip, "channel_bags"):
+                        for bag in strip.channel_bags:
+                            if hasattr(bag, "fcurves"):
+                                fcurves.extend(bag.fcurves)
+
+        return fcurves
+
+    @staticmethod
     def get_action_data(arm_obj, act, bone_bases: Dict[str, BoneBaseData]) -> ActData:
         action_data = ActData()
         max_time = 0
 
-        for curve in act.fcurves:
+        fcurves = AniExporter.get_fcurves(act)
+
+        for curve in fcurves:
             if 'pose.bones' not in curve.data_path:
                 continue
 

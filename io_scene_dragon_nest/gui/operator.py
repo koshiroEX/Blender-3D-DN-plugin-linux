@@ -1,40 +1,44 @@
 import bpy
 from bpy.props import (
-        BoolProperty,
-        FloatProperty,
-        IntProperty,
-        StringProperty,
-        EnumProperty,
-        )
+    BoolProperty,
+    FloatProperty,
+    IntProperty,
+    StringProperty,
+    EnumProperty,
+)
 from bpy_extras.io_utils import (
-        ImportHelper,
-        ExportHelper,
-        )
+    ImportHelper,
+    ExportHelper,
+)
+
+# global ref for importer
+ani_imp = None
 
 
 class DN_AnimChooserBox(bpy.types.Operator):
     bl_idname = "dialog.anim_chooser_box"
     bl_label = "Choose animation for import"
-    bl_options = {'REGISTER'}
+    bl_options = {'REGISTER', 'INTERNAL'}
 
     def anim_enum_callback(self, context):
         global ani_imp
 
-        if not ani_imp:
-            return []
-
         items = [("0", "*All*", "", 0)]
-        for i, name in enumerate(ani_imp.ani.names):
-            items.append((str(i+1), name, "", i+1))
+        if ani_imp and hasattr(ani_imp, 'ani') and hasattr(ani_imp.ani, 'names'):
+            for i, name in enumerate(ani_imp.ani.names):
+                items.append((str(i + 1), name, "", i + 1))
 
         return items
 
-    anim_list: EnumProperty(items=anim_enum_callback, name="Animation Name")
+    anim_list: EnumProperty(
+        items=anim_enum_callback,
+        name="Animation Name"
+    )
 
     def execute(self, context):
         global ani_imp
 
-        if not self.anim_list:
+        if not self.anim_list or not ani_imp:
             return {'CANCELLED'}
 
         options = {
@@ -42,7 +46,7 @@ class DN_AnimChooserBox(bpy.types.Operator):
         }
 
         ani_imp.import_data(context, options)
-        imported = ani_imp.imported
+        imported = getattr(ani_imp, 'imported', False)
 
         ani_imp = None
         return {'FINISHED'} if imported else {'CANCELLED'}
@@ -64,17 +68,17 @@ class DN_Import(bpy.types.Operator, ImportHelper):
     filter_glob: StringProperty(default="*.skn;*.msh;*.ani;*.anim", options={'HIDDEN'})
 
     global_scale: FloatProperty(
-        name = "Scale",
-        description = "Root armature scale",
-        min = 0.001,
-        max = 1000.0,
-        default = 1.0
+        name="Scale",
+        description="Root armature scale",
+        min=0.001,
+        max=1000.0,
+        default=1.0
     )
 
     append_to_target: BoolProperty(
-        name = "Append to Target Armature",
-        description = "Attach the imported mesh to the selected armature",
-        default = False,
+        name="Append to Target Armature",
+        description="Attach the imported mesh to the selected armature",
+        default=False,
     )
 
     def execute(self, context):
@@ -99,7 +103,7 @@ class DN_Import(bpy.types.Operator, ImportHelper):
             if not ani_imp:
                 return {'CANCELLED'}
 
-            if not ani_imp.imported:
+            if not getattr(ani_imp, 'imported', False):
                 bpy.ops.dialog.anim_chooser_box('INVOKE_DEFAULT')
 
         return {'FINISHED'}
@@ -114,33 +118,33 @@ class DN_ExportSKN(bpy.types.Operator, ExportHelper):
     filter_glob: StringProperty(default="*.skn", options={'HIDDEN'})
 
     skn_version: EnumProperty(
-        name = "Skin Version",
-        items = (
+        name="Skin Version",
+        items=(
             ('10', '10', ''),
         ),
-        default = '10'
+        default='10'
     )
 
     msh_version: EnumProperty(
-        name = "Mesh Version",
-        items = (
+        name="Mesh Version",
+        items=(
             ('10', '10', ''),
             ('11', '11', ''),
             ('12', '12', ''),
             ('13', '13', ''),
         ),
-        default = '13'
+        default='13'
     )
 
     msh_name: StringProperty(
-        name = "Custom MSH File Name",
-        description = "File name used for exporting the MSH file. Leave blank if MSH name is same as SKN name"
+        name="Custom MSH File Name",
+        description="File name used for exporting the MSH file. Leave blank if MSH name is same as SKN name"
     )
 
     apply_root_transform: BoolProperty(
-        name = "Apply Root Transform",
-        description = "Apply root armature transformation",
-        default = True,
+        name="Apply Root Transform",
+        description="Apply root armature transformation",
+        default=True,
     )
 
     def execute(self, context):
@@ -168,20 +172,20 @@ class DN_ExportMSH(bpy.types.Operator, ExportHelper):
     filter_glob: StringProperty(default="*.msh", options={'HIDDEN'})
 
     msh_version: EnumProperty(
-        name = "Mesh Version",
-        items = (
+        name="Mesh Version",
+        items=(
             ('10', '10', ''),
             ('11', '11', ''),
             ('12', '12', ''),
             ('13', '13', ''),
         ),
-        default = '13'
+        default='13'
     )
 
     apply_root_transform: BoolProperty(
-        name = "Apply Root Transform",
-        description = "Apply root armature transformation",
-        default = True,
+        name="Apply Root Transform",
+        description="Apply root armature transformation",
+        default=True,
     )
 
     def execute(self, context):
@@ -207,18 +211,18 @@ class DN_ExportANI(bpy.types.Operator, ExportHelper):
     filter_glob: StringProperty(default="*.ani", options={'HIDDEN'})
 
     ani_version: EnumProperty(
-        name = "Animation Version",
-        items = (
+        name="Animation Version",
+        items=(
             ('10', '10', ''),
             ('11', '11', ''),
         ),
-        default = '11'
+        default='11'
     )
 
     apply_root_transform: BoolProperty(
-        name = "Apply Root Transform",
-        description = "Apply root armature transformation",
-        default = True,
+        name="Apply Root Transform",
+        description="Apply root armature transformation",
+        default=True,
     )
 
     def draw(self, context):
@@ -231,7 +235,9 @@ class DN_ExportANI(bpy.types.Operator, ExportHelper):
         box.label(text="Actions")
 
         for act in bpy.data.actions:
-            box.prop(act.dragon_nest, "use_export", text=act.name)
+            # protection against stuff that isnt dragon_nest
+            if hasattr(act, "dragon_nest"):
+                box.prop(act.dragon_nest, "use_export", text=act.name)
 
     def execute(self, context):
         filepath = self.filepath
@@ -253,7 +259,8 @@ class DN_AddExtraPropItem(bpy.types.Operator):
 
     def execute(self, context):
         material = context.material
-        material.dragon_nest.extra.add()
+        if material and hasattr(material, "dragon_nest"):
+            material.dragon_nest.extra.add()
         return {'FINISHED'}
 
 
@@ -265,7 +272,8 @@ class DN_RemoveExtraPropItem(bpy.types.Operator):
 
     def execute(self, context):
         material = context.material
-        material.dragon_nest.extra.remove(self.index)
+        if material and hasattr(material, "dragon_nest"):
+            material.dragon_nest.extra.remove(self.index)
         return {'FINISHED'}
 
 
@@ -273,17 +281,13 @@ class DN_MT_ExportChoice(bpy.types.Menu):
     bl_label = "Dragon Nest"
 
     def draw(self, context):
-        self.layout.operator(DN_ExportSKN.bl_idname,
-                             text="Skin (.skn) + Mesh (.msh)")
-        self.layout.operator(DN_ExportMSH.bl_idname,
-                             text="Mesh (.msh)")
-        self.layout.operator(DN_ExportANI.bl_idname,
-                             text="Animation (.ani)")
+        self.layout.operator(DN_ExportSKN.bl_idname, text="Skin (.skn) + Mesh (.msh)")
+        self.layout.operator(DN_ExportMSH.bl_idname, text="Mesh (.msh)")
+        self.layout.operator(DN_ExportANI.bl_idname, text="Animation (.ani)")
 
 
 def menu_func_import(self, context):
-    self.layout.operator(DN_Import.bl_idname,
-                         text="Dragon Nest Model (.skn, .msh, .ani, .anim)")
+    self.layout.operator(DN_Import.bl_idname, text="Dragon Nest Model (.skn, .msh, .ani, .anim)")
 
 
 def menu_func_export(self, context):
