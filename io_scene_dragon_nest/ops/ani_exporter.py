@@ -52,7 +52,6 @@ class BoneAnimData:
     def __init__(self):
         self.locations: Dict[int, Vector] = {}
         self.rotations_quat: Dict[int, Quaternion] = {}
-        self.rotations_euler: Dict[int, Euler] = {}
         self.scales: Dict[int, Vector] = {}
 
 
@@ -65,89 +64,67 @@ class ActData:
 class AniExporter:
 
     @staticmethod
-    def get_fcurves(act):
-        """Retorna a lista de fcurves lidando com a API antiga e com o novo sistema de Slotted Actions (Blender 4.4+/5.x)."""
-        if hasattr(act, "fcurves"):
-            return act.fcurves
-        elif hasattr(act, "curves"):
-            return act.curves
-
-        fcurves = []
-        # support for slots system
-        if hasattr(act, "slots"):
-            for slot in act.slots:
-                if hasattr(slot, "fcurves"):
-                    fcurves.extend(slot.fcurves)
-                elif hasattr(slot, "curves"):
-                    fcurves.extend(slot.curves)
-        # support for bindings/channels if fcurves area layered
-        elif hasattr(act, "layers"):
-            for layer in act.layers:
-                for strip in getattr(layer, "strips", []):
-                    if hasattr(strip, "channel_bags"):
-                        for bag in strip.channel_bags:
-                            if hasattr(bag, "fcurves"):
-                                fcurves.extend(bag.fcurves)
-
-        return fcurves
-
-    @staticmethod
-    def get_action_data(arm_obj, act, bone_bases: Dict[str, BoneBaseData]) -> ActData:
+    def get_action_data(context, arm_obj, act, bone_bases: Dict[str, BoneBaseData]) -> ActData:
         action_data = ActData()
         max_time = 0
 
-        fcurves = AniExporter.get_fcurves(act)
+        # Determine frame range from the Action
+        if hasattr(act, "frame_range"):
+            start_frame = int(act.frame_range[0])
+            end_frame = int(act.frame_range[1])
+        else:
+            start_frame = context.scene.frame_start
+            end_frame = context.scene.frame_end
 
-        for curve in fcurves:
-            if 'pose.bones' not in curve.data_path:
+        # Backup current action and NLA state
+        original_action = arm_obj.animation_data.action if arm_obj.animation_data else None
+
+        if arm_obj.animation_data:
+            arm_obj.animation_data.action = act
+
+        # Visually sample the animation frame by frame.
+        # This completely bypasses F-Curves and natively bakes IK, Constraints, NLA, and Slotted/Layered Actions.
+        for f in range(start_frame, end_frame + 1):
+            context.scene.frame_set(f)
+            # Force update the dependency graph so IK and constraints evaluate
+            context.view_layer.update()
+
+            time = f
+            if time < 0:
                 continue
+            max_time = max(max_time, time)
 
-            bone_name = curve.data_path.split('"')[1]
-            bone = arm_obj.pose.bones.get(bone_name)
-            if not bone:
-                continue
+            for bone in arm_obj.pose.bones:
+                bone_name = bone.name
+                if bone_name not in bone_bases:
+                    continue
 
-            bone_base = bone_bases[bone_name]
-            anim_data = action_data.bones_data.get(bone_name) or BoneAnimData()
+                anim_data = action_data.bones_data.setdefault(bone_name, BoneAnimData())
 
-            for kp in curve.keyframe_points:
-                time = int(kp.co[0])
+                # Get fully evaluated Object-Space matrix and Rest matrix
+                M = bone.matrix
+                B = bone.bone.matrix_local
 
-                if curve.data_path == f'pose.bones["{bone_name}"].location':
-                    loc = anim_data.locations.get(time) or bone_base.location.copy()
-                    loc[curve.array_index] = kp.co[1]
-                    anim_data.locations[time] = loc
-                    max_time = max(time, max_time)
+                # Calculate the exact equivalent of `matrix_basis` from the evaluated pose.
+                # This perfectly translates IK constraints into the local transform channels.
+                if bone.parent:
+                    M_p = bone.parent.matrix
+                    B_p = bone.parent.bone.matrix_local
+                    matrix_basis_baked = B.inverted() @ B_p @ M_p.inverted() @ M
+                else:
+                    matrix_basis_baked = B.inverted() @ M
 
-                elif curve.data_path == f'pose.bones["{bone_name}"].rotation_quaternion':
-                    if bone.rotation_mode == 'QUATERNION':
-                        rot = anim_data.rotations_quat.get(time) or bone_base.rotation.copy()
-                        rot[curve.array_index] = kp.co[1]
-                        anim_data.rotations_quat[time] = rot
-                        max_time = max(time, max_time)
+                loc, rot, scl = matrix_basis_baked.decompose()
 
-                elif curve.data_path == f'pose.bones["{bone_name}"].rotation_euler':
-                    if bone.rotation_mode != 'QUATERNION':
-                        rot = anim_data.rotations_euler.get(time) or bone_base.rotation.to_euler()
-                        rot[curve.array_index] = kp.co[1]
-                        anim_data.rotations_euler[time] = rot
-                        max_time = max(time, max_time)
+                anim_data.locations[time] = loc
+                anim_data.rotations_quat[time] = rot
+                anim_data.scales[time] = scl
 
-                elif curve.data_path == f'pose.bones["{bone_name}"].scale':
-                    scl = anim_data.scales.get(time) or bone_base.scale.copy()
-                    scl[curve.array_index] = kp.co[1]
-                    anim_data.scales[time] = scl
-                    max_time = max(time, max_time)
+        # Restore original action
+        if arm_obj.animation_data:
+            arm_obj.animation_data.action = original_action
 
-            action_data.bones_data[bone_name] = anim_data
-
-        # convert euler to quat
-        for anim_data in action_data.bones_data.values():
-            if not anim_data.rotations_quat:
-                for time, rot in anim_data.rotations_euler.items():
-                    anim_data.rotations_quat[time] = rot.to_quaternion()
-
-        action_data.frames_num = max_time + 1
+        action_data.frames_num = max(1, max_time + 1)
         return action_data
 
     def export_data(self, context, options):
@@ -157,6 +134,11 @@ class AniExporter:
 
         self.ani.file_type = "Eternity Engine Ani File 0.1"
         self.ani.version = version
+
+        original_frame = context.scene.frame_current
+
+        if not arm_obj.animation_data:
+            arm_obj.animation_data_create()
 
         matrix_arm = unoriented_matrix(arm_obj.matrix_world) if apply_root_transform else Matrix.Identity(4)
         scale_arm = matrix_arm.to_scale()
@@ -176,11 +158,15 @@ class AniExporter:
 
         action_data_list: List[ActData] = []
         for act in actions:
-            ad = AniExporter.get_action_data(arm_obj, act, bone_bases)
+            # We now pass `context` to sample visually
+            ad = AniExporter.get_action_data(context, arm_obj, act, bone_bases)
             action_data_list.append(ad)
 
             self.ani.names.append(act.name)
             self.ani.frames_num.append(ad.frames_num)
+
+        # Restore frame
+        context.scene.frame_set(original_frame)
 
         active_bone_names = set()
         for ad in action_data_list:
@@ -204,7 +190,7 @@ class AniExporter:
                 bone_parent = bone.parent.name if bone.parent else "Scene Root"
                 locations, rotations, scales = [], [], []
 
-                # location
+                # Process location keyframes
                 frames = sorted(bd.locations) if bd else None
                 if frames:
                     loc = convert_location(bd.locations[frames[0]], matrix_rest, matrix_parent, matrix_root)
@@ -223,7 +209,7 @@ class AniExporter:
                     loc = (matrix_root @ matrix_base).to_translation()
                     base_location = common.Vector3D(*loc)
 
-                # rotation
+                # Process rotation keyframes
                 frames = sorted(bd.rotations_quat) if bd else None
                 if frames:
                     rot = convert_rotation(bd.rotations_quat[frames[0]], matrix_rest, matrix_parent, matrix_root)
@@ -242,7 +228,7 @@ class AniExporter:
                     rot = (matrix_root @ matrix_base).to_quaternion()
                     base_rotation = common.Vector4D(rot.x, rot.y, rot.z, rot.w)
 
-                # scale
+                # Process scale keyframes
                 frames = sorted(bd.scales) if bd else None
                 if frames:
                     scl = convert_scale(bd.scales[frames[0]], matrix_rest, matrix_parent)
@@ -281,7 +267,7 @@ def save(context, filepath, options):
     arm_obj = get_active_armature_object(context)
     if not arm_obj:
         context.window_manager.popup_menu(gui.need_armature_to_export, title='Error', icon='ERROR')
-        return
+        return False
 
     actions = [act for act in bpy.data.actions if act.dragon_nest.use_export]
 
@@ -296,4 +282,4 @@ def save(context, filepath, options):
     ani_exporter.export_data(context, ani_options)
     ani_exporter.ani.save_file(filepath)
 
-    return ani_exporter
+    return True
